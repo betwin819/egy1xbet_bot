@@ -1,5 +1,7 @@
 import os
 import logging
+import threading
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     ApplicationBuilder,
@@ -11,20 +13,17 @@ from telegram.ext import (
 )
 
 # ── إعدادات عامة ──
-# اقرأ التوكن و Admin Chat ID من متغيرات البيئة لتجنب تخزينها في الكود
 TOKEN = os.environ.get("TOKEN")
 ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID", 0))
 if not TOKEN or not ADMIN_CHAT_ID:
     raise RuntimeError("TOKEN and ADMIN_CHAT_ID must be set as environment variables.")
 
 AFFILIATE_LINK = os.environ.get("AFFILIATE_LINK", "https://refpa3740576.top/L?tag=d_4354442m_4129c_&site=4354442&ad=4129")
-
 VODAFONE_NUMBER = os.environ.get("VODAFONE_NUMBER", "01055001212")
 WITHDRAW_ADDRESS = os.environ.get("WITHDRAW_ADDRESS", "Egypt, Abou Reddis, Ash Store")
 
 # ── حالات المحادثة ──
-CHOOSING, DEP_AMT, DEP_PHONE, DEP_SCREEN, DEP_PLAYER, \
-WIT_WALLET, WIT_PLAYER_ID, WIT_AMOUNT, WIT_CODE = range(9)
+CHOOSING, DEP_AMT, DEP_PHONE, DEP_SCREEN, DEP_PLAYER, WIT_WALLET, WIT_PLAYER_ID, WIT_AMOUNT, WIT_CODE = range(9)
 
 # ── لوحة الخيارات ──
 def choice_keyboard():
@@ -57,7 +56,6 @@ async def deposit_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def deposit_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     phone = update.message.text.strip()
-    # validate phone
     if not phone.isdigit() or len(phone) < 8:
         await update.message.reply_text("🚨 يرجى إدخال رقم هاتف صالح.")
         return DEP_PHONE
@@ -79,27 +77,18 @@ async def deposit_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚨 يرجى إدخال كود لاعب صالح.")
         return DEP_PLAYER
     context.user_data['player_id'] = pid
-
-    # إرسال للأدمن
     await context.bot.send_message(
         chat_id=ADMIN_CHAT_ID,
         text=(
             "📥 طلب إيداع جديد:\n"
-            f"➡️ Player ID: {context.user_data['player_id']}\n"
+            f"➡️ Player ID: {pid}\n"
             f"➡️ المبلغ: {context.user_data['amount']}\n"
             f"➡️ رقم الهاتف: {context.user_data['phone']}"
         )
     )
-    await context.bot.send_photo(
-        chat_id=ADMIN_CHAT_ID,
-        photo=context.user_data['screenshot_id']
-    )
-
-    # رسالة شكر للمستخدم
+    await context.bot.send_photo(chat_id=ADMIN_CHAT_ID, photo=context.user_data['screenshot_id'])
     button = InlineKeyboardButton("🎁 العب الآن عبر التطبيق الرسمي", url=AFFILIATE_LINK)
-    await update.message.reply_text(
-        "🎉 تم استلام طلبك بنجاح!", reply_markup=InlineKeyboardMarkup([[button]])
-    )
+    await update.message.reply_text("🎉 تم استلام طلبك بنجاح!", reply_markup=InlineKeyboardMarkup([[button]]))
     await update.message.reply_text("🔄 هل ترغب في عملية أخرى؟", reply_markup=choice_keyboard())
     return CHOOSING
 
@@ -144,8 +133,6 @@ async def withdraw_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚨 يرجى إدخال كود صالح.")
         return WIT_CODE
     context.user_data['withdraw_code'] = code
-
-    # إرسال للأدمن
     await context.bot.send_message(
         chat_id=ADMIN_CHAT_ID,
         text=(
@@ -156,11 +143,8 @@ async def withdraw_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"➡️ كود السحب: {context.user_data['withdraw_code']}"
         )
     )
-    # رسالة شكر للمستخدم
     button = InlineKeyboardButton("🎁 العب الآن عبر التطبيق الرسمي", url=AFFILIATE_LINK)
-    await update.message.reply_text(
-        "🎉 تم استلام طلبك بنجاح!", reply_markup=InlineKeyboardMarkup([[button]])
-    )
+    await update.message.reply_text("🎉 تم استلام طلبك بنجاح!", reply_markup=InlineKeyboardMarkup([[button]]))
     await update.message.reply_text("🔄 هل ترغب في عملية أخرى؟", reply_markup=choice_keyboard())
     return CHOOSING
 
@@ -171,11 +155,17 @@ async def error(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update and update.message:
         await update.message.reply_text("🚨 الوكيل لا يعمل في الوقت الحالي، يرجى المحاولة لاحقاً.")
 
-# ── تشغيل البوت ──
-if __name__ == '__main__':
-    logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_error_handler(error)
+# ── Webserver لKeep-Alive & تشغيل البوت ──
+app = Flask(__name__)
+@app.route("/")
+def home():
+    return "Bot is alive"
+
+def run_web():
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 3000)))
+
+def run_bot():
+    application = ApplicationBuilder().token(TOKEN).build()
     conv = ConversationHandler(
         entry_points=[CommandHandler('start', start), MessageHandler(filters.Regex('^💸 إيداع$'), deposit_start), MessageHandler(filters.Regex('^🏧 سحب$'), withdraw_start)],
         states={
@@ -191,6 +181,13 @@ if __name__ == '__main__':
         },
         fallbacks=[],
     )
-    app.add_handler(conv)
-    print("✅ Bot is running...")
-    app.run_polling()
+    application.add_handler(conv)
+    application.add_error_handler(error)
+    application.run_polling()
+
+if __name__ == '__main__':
+    logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+    # شغّل الويب والخدمة في ثريدز
+    threading.Thread(target=run_web).start()
+    threading.Thread(target=run_bot).start()
+
